@@ -3,14 +3,19 @@
 pipeline {
 	agent any
 
+    options {
+        copyArtifactPermission('shared_lib_test');
+    }
+
 	environment {
 		YOCTO_VERSION = 'kirkstone'
 		BUILDUSER = "${sh(script:'id -u', returnStdout: true).trim()}"
 		KVM_GID = "${sh(script:'getent group kvm | cut -d: -f3', returnStdout: true).trim()}"
+		GYROID_ARCH = 'x86'
+		GYROID_MACHINE = 'genericx86-64'
+		PR_BRANCHES = ""
+		BUILD_INSTALLER = 'n'
 	}   
-
-
-
    
 //	parameters {
 //		choice(name: 'GYROID_ARCH', choices: ['x86', 'arm32', 'arm64'], description: 'GyroidOS Target Architecture')
@@ -48,17 +53,20 @@ pipeline {
 
 		stage('Source checks + unit tests') {
 
-			when {
-				expression {
-					if (! fileExists("trustme/cml")) {
-						echo "CML sources not available, skipping initial tests"
-						return false
-					} else {
-						echo "CML sources available, performing initial tests"
-						return true
-					} 
-				}
-			}
+			// TODO enable
+			//when {
+			//	expression {
+			//		if (! fileExists("trustme/cml")) {
+			//			echo "CML sources not available, skipping initial tests"
+			//			return false
+			//		} else {
+			//			echo "CML sources available, performing initial tests"
+			//			return true
+			//		} 
+			//	}
+			//}
+
+			when { expression { return false }}
 
 			parallel {
 				stage ('Code Format & Style') {
@@ -105,5 +113,63 @@ pipeline {
 				}
 			} // parallel
 		} // stage repo + CML checks
+
+		stage ('Build + Test Images') {
+
+			when { expression { return false }}
+			// Build images in parallel
+			matrix {
+				axes {
+					axis {
+						name 'BUILDTYPE'
+							values 'dev', 'production', 'ccmode', 'schsm'
+					}
+				}
+
+				// TODO adapt dockerfile locations for upstream commit
+				stages {
+					stage ('Build image') {
+						agent {
+							dockerfile {
+								dir "."
+								additionalBuildArgs '--build-arg=BUILDUSER=$BUILDUSER'
+								args '--entrypoint=\'\' -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sources:/source_mirror -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sstate-cache:/sstate_mirror --env BUILDNODE="${env.NODE_NAME}"'
+								reuseNode false
+							}
+						}
+
+						steps {
+							script {
+								// TODO env.PR_BRANCHES back to PR_BRANCHES for upstream commit
+								if (env.CHANGE_TARGET == null && env.PR_BRANCHES == "" && env.YOCTO_VERSION == env.BRANCH_NAME) {
+									// TODO sync_mirrors: y in this case
+									stepBuildImage(workspace: "${WORKSPACE}", gyroid_arch: "x86", gyroid_machine: "genericx86-64", buildtype: "${BUILDTYPE}", build_installer: "n", sync_mirrors: "n")
+								} else {
+									stepBuildImage(workspace: "${WORKSPACE}", gyroid_arch: "x86", gyroid_machine: "genericx86-64", buildtype: "${BUILDTYPE}", build_installer: "n", sync_mirrors: "n")
+								}
+							}
+						}
+					}
+				}
+			}
+		} // stage 'Build + Test Images'
+
+		stage ('Integration Tests') {
+				agent {
+					node ('epyc-03') {
+					dockerfile {
+						dir "."
+						additionalBuildArgs '--build-arg=BUILDUSER=$BUILDUSER'
+						args '--entrypoint=\'\' -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sources:/source_mirror -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sstate-cache:/sstate_mirror --env BUILDNODE="${env.NODE_NAME}"'
+						reuseNode false
+					}
+					}
+				}
+
+				steps {
+					stepIntegrationTest(WORKSPACE)
+				}
+		} // stage 'Integration Tests'
+		
 	} // stages
 } // pipeline
