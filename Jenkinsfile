@@ -156,18 +156,16 @@ pipeline {
 
 		stage ('Integration Tests') {
 				agent {
-					node ('epyc-03') {
 					dockerfile {
 						dir "."
 						additionalBuildArgs '--build-arg=BUILDUSER=$BUILDUSER'
 						args '--entrypoint=\'\' -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sources:/source_mirror -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sstate-cache:/sstate_mirror --env BUILDNODE="${env.NODE_NAME}"'
 						reuseNode false
 					}
-					}
 				}
 
 				steps {
-					stepIntegrationTest(WORKSPACE)
+					stepIntegrationTest(workspace: "${WORKSPACE}", buildtype: "${BUILDTYPE}")
 				}
 		} // stage 'Integration Tests'
 		
