@@ -14,6 +14,7 @@ pipeline {
 		GYROID_ARCH = 'x86'
 		GYROID_MACHINE = 'genericx86-64'
 		PR_BRANCHES = ""
+		BUILDTYPE = 'dev'
 		BUILD_INSTALLER = 'n'
 	}   
    
@@ -159,15 +160,32 @@ pipeline {
 					dockerfile {
 						dir "."
 						additionalBuildArgs '--build-arg=BUILDUSER=$BUILDUSER'
-						args '--entrypoint=\'\' -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sources:/source_mirror -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sstate-cache:/sstate_mirror --env BUILDNODE="${env.NODE_NAME}"'
-						reuseNode false
+						args '--entrypoint=\'\' -v /yocto_mirror:/yocto_mirror --device=/dev/kvm --group-add=$KVM_GID -p 2222 -p 5901 --env BUILDNODE="${env.NODE_NAME}"'
+						label 'worker'
 					}
 				}
 
+
+			when { expression { return false }}
+
 				steps {
-					stepIntegrationTest(workspace: "${WORKSPACE}", buildtype: "${BUILDTYPE}")
+					sh "echo ${env.BUILDNODE}"
+					sh "ls /yocto_mirror"
+					stepIntegrationTest(workspace: "${WORKSPACE}", buildtype: "${BUILDTYPE}", schsm_serial: "", schsm_pin: "")
 				}
 		} // stage 'Integration Tests'
+
+		stage ('Token Tests') {
+			agent {
+				node { label 'testing' }
+			}
+
+			steps {
+				sh "echo ${env.BUILDNODE}"
+				sh "ls /yocto_mirror"
+				stepIntegrationTest(workspace: "${WORKSPACE}", buildtype: "${BUILDTYPE}", schsm_serial: "${env.PHYSHSM}", schsm_pin: "12345678")
+			}
+		} // stage 'Token Tests'
 		
 	} // stages
 } // pipeline
