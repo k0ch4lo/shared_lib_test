@@ -14,16 +14,16 @@ pipeline {
 		GYROID_ARCH = 'x86'
 		GYROID_MACHINE = 'genericx86-64'
 		PR_BRANCHES = ""
-		BUILD_INSTALLER = 'n'
 	}   
    
 	parameters {
 		choice(name: 'GYROID_ARCH', choices: ['x86', 'arm32', 'arm64'], description: 'GyroidOS Target Architecture')
 		choice(name: 'GYROID_MACHINE', choices: ['genericx86-64', 'apalis-imx8', 'raspberrypi3-64', 'raspberrypi2'], description: 'GyroidOS Target Machine (Must be compatible with GYROID_ARCH!)')
 		string(name: 'PR_BRANCHES', defaultValue: '', description: 'Comma separated list of pull request branches (e.g. meta-trustx=PR-177,meta-trustx-nxp=PR-13,gyroidos_build=PR-97)')
-		choice(name: 'BUILD_INSTALLER', choices: ['y', 'n'], description: 'Build the GyroidOS installer (x86 only)')
+		choice(name: 'BUILD_INSTALLER', choices: ['n', 'y'], description: 'Build the GyroidOS installer (x86 only)')
 		choice(name: 'REBUILD_PREVIOUS', choices: ['n', 'y'], description: 'Rebuild selected, previous build instead of just reusing image from artifacts')
 		buildSelector defaultSelector: specific('${BUILD_NUMBER}'), name: 'BUILDSELECTOR', description: 'Image to perform integration tests on. Changing the default value skips the image build.'
+		choice(name: 'SYNC_MIRRORS', choices: ['n', 'y'], description: 'Sync source mirrors after successful build')
 	}
 
 
@@ -44,7 +44,7 @@ pipeline {
 					steps {
 						echo "Running on node $NODE_NAME"
 
-						stepInitWs(manifest: "testmanifest.xml", workspace: "${WORKSPACE}", gyroid_arch: "x86", gyroid_machine: "genericx86-64", selector: buildParameter('BUILDSELECTOR'), rebuild_previous: "${REBUILD_PREVIOUS}")
+						stepInitWs(manifest: "testmanifest.xml", workspace: "${WORKSPACE}", manifest_path: "${WORKSPACE}/.manifests", manifest_name: "yocto-${GYROID_ARCH}-${GYROID_MACHINE}.xml", gyroid_arch: "x86", gyroid_machine: "genericx86-64", selector: buildParameter('BUILDSELECTOR'), rebuild_previous: "${REBUILD_PREVIOUS}", buildtype: "dev")
 					}
 				}
 
@@ -66,7 +66,7 @@ pipeline {
 						stage ('Code Format & Style') {
 							steps {
 								echo "Entering format test stage, workspace: ${WORKSPACE}"
-								stepFormatCheck("${WORKSPACE}/trustme/cml")
+								stepFormatCheck(workspace: WORKSPACE, sourcedir: "${WORKSPACE}/trustme/cml")
 							}
 						}
 		
@@ -99,7 +99,7 @@ pipeline {
 							steps {
 								script {
 										echo "Running on node $NODE_NAME"
-										stepUnitTests("${WORKSPACE}/trustme/cml")
+										stepUnitTests(workspace: WORKSPACE, sourcedir: "${WORKSPACE}/trustme/cml")
 									}
 								}
 		 
@@ -128,7 +128,7 @@ pipeline {
 					dockerfile {
 						dir "."
 						additionalBuildArgs '--build-arg=BUILDUSER=$BUILDUSER'
-						args '--entrypoint=\'\' -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sources:/source_mirror -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sstate-cache:/sstate_mirror --env NODE_NAME="${NODE_NAME}"'
+						args '--entrypoint=\'\' -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sources:/source_mirror -v /yocto_mirror/${YOCTO_VERSION}/${GYROID_ARCH}/sstate-cache:/sstate_mirror --env NODE_NAME="${NODE_NAME}" -v /home/jenkins-ssh/.ssh/known_hosts:/home/builder/.ssh/known_hosts'
 						reuseNode false
 					}
 				}
@@ -138,11 +138,15 @@ pipeline {
 						//when { expression { return false }}
 						steps {
 								script {
-								// TODO env.PR_BRANCHES back to PR_BRANCHES for upstream commit
-								if (env.CHANGE_TARGET == null && env.PR_BRANCHES == "" && env.YOCTO_VERSION == env.BRANCH_NAME) {
-									stepBuildImage(workspace: "${WORKSPACE}", gyroid_arch: "x86", gyroid_machine: "genericx86-64", buildtype: "${BUILDTYPE}", selector: buildParameter('BUILDSELECTOR'), build_installer: "n", sync_mirrors: "y", rebuild_previous: "${REBUILD_PREVIOUS}")
+								// TODO env.PR_BRANCHES back to PR_BRANCHES for upstream commit				
+								if ("y" == "${SYNC_MIRRORS}") {
+									sshagent(credentials: ['MIRROR_ACCESS']){
+										 sh "ssh jenkins-ssh@${env.MIRRORHOST} \"ls -al /yocto_mirror\""
+										stepBuildImage(workspace: WORKSPACE, manifest_path: "${WORKSPACE}/.manifests", manifest_name: "yocto-${GYROID_ARCH}-${GYROID_MACHINE}.xml", yocto_version: YOCTO_VERSION, gyroid_arch: GYROID_ARCH, gyroid_machine: GYROID_MACHINE, buildtype: BUILDTYPE, selector: buildParameter('BUILDSELECTOR'), build_installer: BUILD_INSTALLER, sync_mirrors: SYNC_MIRRORS, rebuild_previous: REBUILD_PREVIOUS)
+									}
 								} else {
-									stepBuildImage(workspace: "${WORKSPACE}", gyroid_arch: "x86", gyroid_machine: "genericx86-64", buildtype: "${BUILDTYPE}",  selector: buildParameter('BUILDSELECTOR'), build_installer: "n", sync_mirrors: "n", rebuild_previous: "${REBUILD_PREVIOUS}")
+									echo "wont sync mirrors"
+										stepBuildImage(workspace: WORKSPACE, manifest_path: "${WORKSPACE}/.manifests", manifest_name: "yocto-${GYROID_ARCH}-${GYROID_MACHINE}.xml", yocto_version: YOCTO_VERSION, gyroid_arch: GYROID_ARCH, gyroid_machine: GYROID_MACHINE, buildtype: BUILDTYPE, selector: buildParameter('BUILDSELECTOR'), build_installer: BUILD_INSTALLER, sync_mirrors: SYNC_MIRRORS, rebuild_previous: REBUILD_PREVIOUS)
 								}
 							}
 						}
@@ -176,7 +180,7 @@ pipeline {
 						steps {
 							sh "echo ${env.BUILDNODE}"
 							sh "ls /yocto_mirror"
-							stepIntegrationTest(workspace: "${WORKSPACE}", buildtype: "${BUILDTYPE}", selector: buildParameter('BUILDSELECTOR'), schsm_serial: "", schsm_pin: "")
+							stepIntegrationTest(workspace: "${WORKSPACE}", gyroid_arch: GYROID_ARCH, gyroid_machine: GYROID_MACHINE, buildtype: "${BUILDTYPE}", selector: buildParameter('BUILDSELECTOR'), schsm_serial: "", schsm_pin: "")
 						}
 					} // stage 'Perform tests'
 				} // stages
@@ -191,7 +195,7 @@ pipeline {
 			steps {
 				sh "echo ${env.BUILDNODE}"
 				sh "ls /yocto_mirror"
-				stepIntegrationTest(workspace: "${WORKSPACE}", buildtype: "schsm", selector: buildParameter('BUILDSELECTOR'), schsm_serial: "${env.PHYSHSM}", schsm_pin: "12345678")
+				stepIntegrationTest(workspace: "${WORKSPACE}", gyroid_arch: GYROID_ARCH, gyroid_machine: GYROID_MACHINE, buildtype: "schsm", selector: buildParameter('BUILDSELECTOR'), schsm_serial: "${env.PHYSHSM}", schsm_pin: "12345678")
 			}
 		} // stage 'Token Tests'
 
